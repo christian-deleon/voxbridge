@@ -65,7 +65,7 @@ def detect_nat_ip() -> str:
             text=True,
         )
     except (OSError, subprocess.SubprocessError) as e:
-        logger.warning("could not detect vmnet8 IP: %s", e)
+        logger.debug("vmnet8 not available yet: %s", e)
         return "127.0.0.1"
     # find the "inet <addr>/<prefix>" token and return the bare address
     for tok in out.split():
@@ -74,13 +74,50 @@ def detect_nat_ip() -> str:
     return "127.0.0.1"
 
 
+def _bindable(ip: str) -> bool:
+    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    try:
+        s.bind((ip, 0))
+    except OSError:
+        return False
+    else:
+        return True
+    finally:
+        s.close()
+
+
+def resolve_bind_ip(configured: str) -> str:
+    """Block until the bind address is up.
+
+    In auto mode (empty config) this waits for the VMware NAT interface to
+    appear instead of falling back to loopback -- the daemon is useless bound
+    to 127.0.0.1, and at boot it can start before vmnet8 exists.
+    """
+    attempt = 0
+    while True:
+        if configured:
+            candidate = configured
+        else:
+            candidate = detect_nat_ip()
+            if candidate == "127.0.0.1":
+                candidate = ""  # vmnet8 not up yet
+        if candidate and _bindable(candidate):
+            return candidate
+        if attempt % 15 == 0:
+            logger.info(
+                "waiting for bind address (%s)...", configured or "vmnet8 auto-detect"
+            )
+        attempt += 1
+        time.sleep(2)
+
+
 def load_config() -> Config:
     raw = dict(DEFAULTS)
     if CONFIG_PATH.exists():
         raw.update(tomllib.loads(CONFIG_PATH.read_text(encoding="utf-8")))
     runtime = Path(os.environ.get("XDG_RUNTIME_DIR", "/tmp"))
     return Config(
-        bind_ip=str(raw["bind_ip"]) or detect_nat_ip(),
+        bind_ip=str(raw["bind_ip"]),  # "" = auto, resolved at startup
         tcp_port=int(raw["tcp_port"]),
         http_port=int(raw["http_port"]),
         fifo_path=str(raw["fifo_path"]) or str(runtime / "voxbridge.fifo"),
@@ -255,7 +292,8 @@ def main() -> int:
     )
     cfg = load_config()
     token = load_token()
-    logger.info("voxbridge starting (delay=%dms)", cfg.type_delay_ms)
+    cfg.bind_ip = resolve_bind_ip(cfg.bind_ip)
+    logger.info("voxbridge starting on %s (delay=%dms)", cfg.bind_ip, cfg.type_delay_ms)
     threading.Thread(target=fifo_loop, args=(cfg.fifo_path,), daemon=True).start()
     threading.Thread(target=http_loop, args=(cfg, token), daemon=True).start()
     tcp_loop(cfg.bind_ip, cfg.tcp_port, token)
