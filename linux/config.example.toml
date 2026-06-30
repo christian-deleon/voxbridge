@@ -1,0 +1,21 @@
+# voxbridge host config.
+#
+# install.sh writes the live copy to ~/.config/voxbridge/config.toml.
+# The shared token lives separately in ~/.config/voxbridge/token (never here).
+
+# Host IP the guest dials. Empty = auto-detect the VMware NAT interface (vmnet8).
+bind_ip = ""
+
+# TCP port the guest connects to for keystrokes.
+tcp_port = 5599
+
+# HTTP port that serves the rendered client/bootstrap to the guest.
+http_port = 8001
+
+# FIFO that Voxtype writes transcriptions to (via `record start --file=...`).
+# Empty = $XDG_RUNTIME_DIR/voxbridge.fifo
+fifo_path = ""
+
+# Per-character delay (ms) when typing into the guest. Higher = more reliable
+# over a slow link, lower = snappier. 40 is very safe; tune downward.
+type_delay_ms = 20

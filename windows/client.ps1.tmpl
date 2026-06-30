@@ -1,0 +1,77 @@
+# voxbridge in-guest type client (non-admin, no install).
+#
+# Rendered and served by the host daemon at http://{{HOST_IP}}:{{HTTP_PORT}}/client.ps1
+# Dials the host, authenticates with the shared token, then types each received
+# utterance into the FOREGROUND window via SendInput (Unicode) -- whatever is
+# focused in the VM receives it. Auto-reconnects forever.
+
+$ErrorActionPreference = "Stop"
+$HostIP = "{{HOST_IP}}"
+$Port   = {{TCP_PORT}}
+$Token  = "{{TOKEN}}"
+$Delay  = {{DELAY}}
+
+Add-Type @"
+using System;
+using System.Runtime.InteropServices;
+public static class Inj {
+    [StructLayout(LayoutKind.Sequential)]
+    public struct MOUSEINPUT { public int dx; public int dy; public uint mouseData; public uint dwFlags; public uint time; public IntPtr dwExtraInfo; }
+    [StructLayout(LayoutKind.Sequential)]
+    public struct KEYBDINPUT { public ushort wVk; public ushort wScan; public uint dwFlags; public uint time; public IntPtr dwExtraInfo; }
+    [StructLayout(LayoutKind.Sequential)]
+    public struct HARDWAREINPUT { public uint uMsg; public ushort wParamL; public ushort wParamH; }
+    [StructLayout(LayoutKind.Explicit)]
+    public struct INPUTUNION {
+        [FieldOffset(0)] public MOUSEINPUT mi;
+        [FieldOffset(0)] public KEYBDINPUT ki;
+        [FieldOffset(0)] public HARDWAREINPUT hi;
+    }
+    [StructLayout(LayoutKind.Sequential)]
+    public struct INPUT { public uint type; public INPUTUNION u; }
+
+    [DllImport("user32.dll", SetLastError=true)]
+    public static extern uint SendInput(uint nInputs, INPUT[] pInputs, int cbSize);
+
+    public const uint INPUT_KEYBOARD = 1;
+    public const uint KEYEVENTF_KEYUP = 0x0002;
+    public const uint KEYEVENTF_UNICODE = 0x0004;
+    static int SZ = Marshal.SizeOf(typeof(INPUT));
+
+    public static void TypeUnicode(string s, int perCharDelayMs) {
+        foreach (char c in s) {
+            INPUT[] inp = new INPUT[2];
+            inp[0].type = INPUT_KEYBOARD; inp[0].u.ki.wScan = (ushort)c; inp[0].u.ki.dwFlags = KEYEVENTF_UNICODE;
+            inp[1].type = INPUT_KEYBOARD; inp[1].u.ki.wScan = (ushort)c; inp[1].u.ki.dwFlags = KEYEVENTF_UNICODE | KEYEVENTF_KEYUP;
+            SendInput(2, inp, SZ);
+            if (perCharDelayMs > 0) System.Threading.Thread.Sleep(perCharDelayMs);
+        }
+    }
+}
+"@
+
+while ($true) {
+    $client = $null
+    try {
+        $client = New-Object System.Net.Sockets.TcpClient
+        $client.Connect($HostIP, $Port)
+        $stream = $client.GetStream()
+        $reader = New-Object System.IO.StreamReader($stream, [System.Text.Encoding]::ASCII)
+        $writer = New-Object System.IO.StreamWriter($stream, [System.Text.Encoding]::ASCII)
+        $writer.NewLine = "`n"; $writer.AutoFlush = $true
+        $writer.WriteLine($Token)                 # authenticate
+        while ($true) {
+            $line = $reader.ReadLine()
+            if ($null -eq $line) { break }         # host closed / disconnected
+            if ($line.Length -eq 0) { continue }
+            $bytes = [System.Convert]::FromBase64String($line)
+            $text  = [System.Text.Encoding]::UTF8.GetString($bytes)
+            [Inj]::TypeUnicode($text, $Delay)
+        }
+    } catch {
+        # swallow and reconnect
+    } finally {
+        if ($client) { $client.Close() }
+    }
+    Start-Sleep -Seconds 2                          # reconnect backoff
+}

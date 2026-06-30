@@ -1,0 +1,25 @@
+# voxbridge one-time guest bootstrap (non-admin).
+#
+# Run ONCE in the VM:
+#   iex ((New-Object Net.WebClient).DownloadString('http://{{HOST_IP}}:{{HTTP_PORT}}/bootstrap.ps1'))
+#
+# Installs a per-user (HKCU) startup entry that, on every login, fetches the
+# latest client from the host and runs it hidden -- then starts it now.
+
+$ErrorActionPreference = "Stop"
+$HostIP   = "{{HOST_IP}}"
+$HttpPort = {{HTTP_PORT}}
+$Url      = "http://${HostIP}:${HttpPort}/client.ps1"
+
+$inner = "iex ((New-Object Net.WebClient).DownloadString('$Url'))"
+$run   = 'powershell -WindowStyle Hidden -ExecutionPolicy Bypass -Command "' + $inner + '"'
+
+Set-ItemProperty -Path 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run' `
+    -Name 'voxbridge' -Value $run
+Write-Host "Installed login autostart (HKCU\...\Run\voxbridge)."
+
+# Start it now, hidden.
+Start-Process powershell -WindowStyle Hidden -ArgumentList `
+    '-ExecutionPolicy','Bypass','-Command',$inner
+Write-Host "voxbridge client started (hidden) and will auto-start on each login."
+Write-Host "To remove later: Remove-ItemProperty 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run' -Name voxbridge"
