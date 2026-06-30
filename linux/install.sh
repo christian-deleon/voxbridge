@@ -1,96 +1,119 @@
 #!/usr/bin/env bash
-# voxbridge host installer. Idempotent: safe to re-run.
-set -euo pipefail
+# voxbridge host installer -- token, config, firewall, and systemd user service.
+# Idempotent: safe to re-run.
+#
+# Usage: install.sh
+set -Eeuo pipefail
+shopt -s inherit_errexit nullglob
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-SERVER="$SCRIPT_DIR/voxbridge_server.py"
-CFG_DIR="$HOME/.config/voxbridge"
-TOKEN_FILE="$CFG_DIR/token"
-CFG_FILE="$CFG_DIR/config.toml"
-UNIT="$HOME/.config/systemd/user/voxbridge.service"
+script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+repo_dir=$(dirname -- "$script_dir")
+server=$script_dir/voxbridge_server.py
+cfg_dir=$HOME/.config/voxbridge
+token_file=$cfg_dir/token
+cfg_file=$cfg_dir/config.toml
+unit=$HOME/.config/systemd/user/voxbridge.service
 
-msg() { printf '\033[1;36m==>\033[0m %s\n' "$1"; }
-warn() { printf '\033[1;33m!!\033[0m %s\n' "$1"; }
+if [[ -t 1 && -z ${NO_COLOR-} ]] && command -v tput >/dev/null; then
+  c_info=$(tput setaf 6)
+  c_warn=$(tput setaf 3)
+  c_ok=$(tput setaf 2)
+  c_rst=$(tput sgr0)
+else
+  c_info=''
+  c_warn=''
+  c_ok=''
+  c_rst=''
+fi
 
-mkdir -p "$CFG_DIR" "$(dirname "$UNIT")"
+msg() { printf '%s==>%s %s\n' "$c_info" "$c_rst" "$*"; }
+warn() { printf '%s!!%s %s\n' "$c_warn" "$c_rst" "$*" >&2; }
+die() {
+  printf '%s: %s\n' "${0##*/}" "$*" >&2
+  exit 1
+}
+trap 'die "line $LINENO: $BASH_COMMAND failed (exit $?)"' ERR
+
+command -v python3 >/dev/null || die "python3 not found"
+python3=$(command -v python3)
+
+mkdir -p -- "$cfg_dir" "$(dirname -- "$unit")"
 
 # --- token ---
-if [[ ! -f "$TOKEN_FILE" ]]; then
-  umask 077
-  openssl rand -hex 32 >"$TOKEN_FILE"
-  chmod 600 "$TOKEN_FILE"
-  msg "generated shared token at $TOKEN_FILE"
+if [[ ! -f $token_file ]]; then
+  (
+    umask 077
+    openssl rand -hex 32 >"$token_file"
+  )
+  msg "generated shared token at $token_file"
 else
   msg "token already present"
 fi
 
 # --- config ---
-if [[ ! -f "$CFG_FILE" ]]; then
-  cp "$SCRIPT_DIR/config.example.toml" "$CFG_FILE"
-  msg "wrote default config to $CFG_FILE"
+if [[ ! -f $cfg_file ]]; then
+  cp -- "$script_dir/config.example.toml" "$cfg_file"
+  msg "wrote default config to $cfg_file"
 else
-  msg "config already present ($CFG_FILE)"
+  msg "config already present ($cfg_file)"
 fi
 
-# --- detect NAT network ---
-NAT_IP="$(ip -4 -o addr show dev vmnet8 2>/dev/null | awk '{print $4}' | cut -d/ -f1 || true)"
-if [[ -z "$NAT_IP" ]]; then
+# --- detect VMware NAT network ---
+nat_ip=$(ip -4 -o addr show dev vmnet8 2>/dev/null | awk '{print $4}' | cut -d/ -f1) || nat_ip=
+if [[ -z $nat_ip ]]; then
   warn "could not detect vmnet8 IP; is VMware running? (firewall step skipped)"
+  nat_subnet=
 else
-  NAT_SUBNET="${NAT_IP%.*}.0/24"
-  msg "VMware NAT: host=$NAT_IP subnet=$NAT_SUBNET"
+  nat_subnet=${nat_ip%.*}.0/24
+  msg "VMware NAT: host=$nat_ip subnet=$nat_subnet"
 fi
 
-# --- firewall (only if ufw active) ---
-if command -v ufw >/dev/null && sudo -n true 2>/dev/null && [[ -n "${NAT_IP:-}" ]]; then
-  if sudo ufw status 2>/dev/null | grep -q "Status: active"; then
-    sudo ufw allow from "$NAT_SUBNET" to any port 5599 proto tcp comment 'voxbridge' || true
-    sudo ufw allow from "$NAT_SUBNET" to any port 8001 proto tcp comment 'voxbridge' || true
-    msg "ufw rules ensured for $NAT_SUBNET (5599, 8001)"
+# --- firewall (only when ufw is active and sudo is available) ---
+if [[ -n $nat_subnet ]] && command -v ufw >/dev/null; then
+  if sudo -n true 2>/dev/null && sudo ufw status 2>/dev/null | grep -q 'Status: active'; then
+    sudo ufw allow from "$nat_subnet" to any port 5599 proto tcp comment voxbridge
+    sudo ufw allow from "$nat_subnet" to any port 8001 proto tcp comment voxbridge
+    msg "ufw rules ensured for $nat_subnet (5599, 8001)"
+  else
+    warn "ufw present but no passwordless sudo; run these in a terminal:"
+    printf '    sudo ufw allow from %s to any port 5599 proto tcp comment voxbridge\n' "$nat_subnet"
+    printf '    sudo ufw allow from %s to any port 8001 proto tcp comment voxbridge\n' "$nat_subnet"
   fi
-elif command -v ufw >/dev/null && [[ -n "${NAT_IP:-}" ]]; then
-  warn "ufw present but no passwordless sudo; run these in a terminal:"
-  echo "    sudo ufw allow from $NAT_SUBNET to any port 5599 proto tcp comment 'voxbridge'"
-  echo "    sudo ufw allow from $NAT_SUBNET to any port 8001 proto tcp comment 'voxbridge'"
 fi
 
 # --- systemd user service ---
-PYTHON="$(command -v python3)"
-cat >"$UNIT" <<EOF
+cat >"$unit" <<EOF
 [Unit]
-Description=voxbridge - voice dictation bridge to Windows VM
+Description=voxbridge - voice dictation bridge to a Windows VM
 After=graphical-session.target
 
 [Service]
-ExecStart=$PYTHON $SERVER
+ExecStart=$python3 $server
 Restart=always
 RestartSec=2
 
 [Install]
 WantedBy=default.target
 EOF
-msg "installed systemd unit at $UNIT"
+msg "installed systemd unit at $unit"
 
 systemctl --user daemon-reload
 systemctl --user enable --now voxbridge.service
 msg "voxbridge.service enabled and started"
 
 # --- next steps ---
-HTTP_PORT=8001
+printf '\n%svoxbridge installed.%s\n\n' "$c_ok" "$c_rst"
 cat <<EOF
-
-$(printf '\033[1;32mvoxbridge installed.\033[0m')
-
 Next steps:
   1. Add the Hyprland keybind:
-       cat $SCRIPT_DIR/../voxtype/hyprland-keybind.example.conf >> ~/.config/hypr/bindings.conf
+       cat $repo_dir/voxtype/hyprland-keybind.example.conf >> ~/.config/hypr/bindings.conf
        hyprctl reload
 
   2. One-time, inside the Windows VM (non-admin PowerShell):
-       iex ((New-Object Net.WebClient).DownloadString('http://${NAT_IP:-<nat-ip>}:$HTTP_PORT/bootstrap.ps1'))
+       iex ((New-Object Net.WebClient).DownloadString('http://${nat_ip:-<nat-ip>}:8001/bootstrap.ps1'))
 
   3. Hold SUPER+CTRL+SHIFT+X, speak, release -> text appears in the focused
-     VM window. (SUPER+CTRL+X still dictates locally as before.)
+     window in the VM. (SUPER+CTRL+X still dictates locally as before.)
 
 Check status:  systemctl --user status voxbridge.service
 Live logs:     journalctl --user -u voxbridge.service -f
