@@ -201,22 +201,26 @@ def watch_disconnect(conn: socket.socket) -> None:
         conn.close()
 
 
-def tcp_loop(bind_ip: str, port: int, token: str) -> None:
+def tcp_loop(cfg: Config, token: str) -> None:
     srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     for attempt in range(60):
         try:
-            srv.bind((bind_ip, port))
+            srv.bind((cfg.bind_ip, cfg.tcp_port))
             break
         except OSError as e:
             logger.warning(
-                "bind %s:%d failed (%s); retry %d/60", bind_ip, port, e, attempt + 1
+                "bind %s:%d failed (%s); retry %d/60",
+                cfg.bind_ip,
+                cfg.tcp_port,
+                e,
+                attempt + 1,
             )
             time.sleep(2)
     else:
         raise SystemExit("could not bind TCP socket")
     srv.listen(1)
-    logger.info("listening for guest on %s:%d", bind_ip, port)
+    logger.info("listening for guest on %s:%d", cfg.bind_ip, cfg.tcp_port)
     while True:
         conn, addr = srv.accept()
         try:
@@ -230,7 +234,19 @@ def tcp_loop(bind_ip: str, port: int, token: str) -> None:
             logger.warning("rejected %s:%d (bad token)", addr[0], addr[1])
             conn.close()
             continue
-        logger.info("guest authenticated from %s:%d", addr[0], addr[1])
+        # send live runtime config (per-char delay) first, so the client uses the
+        # current value even when it auto-reconnects after a config change
+        try:
+            conn.sendall(f"{cfg.type_delay_ms}\n".encode("ascii"))
+        except OSError:
+            conn.close()
+            continue
+        logger.info(
+            "guest authenticated from %s:%d (delay=%dms)",
+            addr[0],
+            addr[1],
+            cfg.type_delay_ms,
+        )
         set_conn(conn)
         threading.Thread(target=watch_disconnect, args=(conn,), daemon=True).start()
 
@@ -296,7 +312,7 @@ def main() -> int:
     logger.info("voxbridge starting on %s (delay=%dms)", cfg.bind_ip, cfg.type_delay_ms)
     threading.Thread(target=fifo_loop, args=(cfg.fifo_path,), daemon=True).start()
     threading.Thread(target=http_loop, args=(cfg, token), daemon=True).start()
-    tcp_loop(cfg.bind_ip, cfg.tcp_port, token)
+    tcp_loop(cfg, token)
     return 0
 
 

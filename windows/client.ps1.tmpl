@@ -60,6 +60,8 @@ while ($true) {
         $writer = New-Object System.IO.StreamWriter($stream, [System.Text.Encoding]::ASCII)
         $writer.NewLine = "`n"; $writer.AutoFlush = $true
         $writer.WriteLine($Token)                 # authenticate
+        $srvDelay = $reader.ReadLine()            # host sends the current per-char delay
+        if ($srvDelay -match '^\d+$') { $Delay = [int]$srvDelay }
         while ($true) {
             $line = $reader.ReadLine()
             if ($null -eq $line) { break }         # host closed / disconnected
