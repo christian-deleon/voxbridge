@@ -4,22 +4,36 @@
 #   iex ((New-Object Net.WebClient).DownloadString('http://{{HOST_IP}}:{{HTTP_PORT}}/bootstrap.ps1'))
 #
 # Installs a per-user (HKCU) startup entry that, on every login, fetches the
-# latest client from the host and runs it hidden -- then starts it now.
+# latest client from the host and runs it fully hidden -- then starts it now.
 
 $ErrorActionPreference = "Stop"
 $HostIP   = "{{HOST_IP}}"
 $HttpPort = {{HTTP_PORT}}
 $Url      = "http://${HostIP}:${HttpPort}/client.ps1"
 
-$inner = "iex ((New-Object Net.WebClient).DownloadString('$Url'))"
-$run   = 'powershell -WindowStyle Hidden -ExecutionPolicy Bypass -Command "' + $inner + '"'
+# Why VBS: HKCU\...\Run launches processes with a visible console. powershell's
+# -WindowStyle Hidden only hides *after* the window is created (flash, or it
+# sticks around). WScript.Shell.Run with style 0 starts the process hidden.
+$dir = Join-Path $env:LOCALAPPDATA 'voxbridge'
+$vbs = Join-Path $dir 'run.vbs'
+New-Item -ItemType Directory -Force -Path $dir | Out-Null
 
+# VBS doubles double-quotes to escape them inside a string literal.
+$ps = "powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -Command `"iex ((New-Object Net.WebClient).DownloadString('$Url'))`""
+$psEscaped = $ps.Replace('"', '""')
+@(
+    "' voxbridge hidden launcher -- rewritten by bootstrap.ps1"
+    "CreateObject(`"Wscript.Shell`").Run `"$psEscaped`", 0, False"
+) | Set-Content -Path $vbs -Encoding ASCII
+
+$run = "wscript.exe //B //nologo `"$vbs`""
 Set-ItemProperty -Path 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run' `
     -Name 'voxbridge' -Value $run
-Write-Host "Installed login autostart (HKCU\...\Run\voxbridge)."
+Write-Host "Installed login autostart (HKCU\...\Run\voxbridge, hidden via VBS)."
 
-# Start it now, hidden.
-Start-Process powershell -WindowStyle Hidden -ArgumentList `
-    '-ExecutionPolicy','Bypass','-Command',$inner
+# Start it now the same way (no console window).
+Start-Process wscript.exe -ArgumentList '//B','//nologo',$vbs
 Write-Host "voxbridge client started (hidden) and will auto-start on each login."
-Write-Host "To remove later: Remove-ItemProperty 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run' -Name voxbridge"
+Write-Host "To remove later:"
+Write-Host "  Remove-ItemProperty 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run' -Name voxbridge"
+Write-Host "  Remove-Item -Recurse `"$dir`""

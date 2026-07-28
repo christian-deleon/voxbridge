@@ -76,7 +76,10 @@ iex ((New-Object Net.WebClient).DownloadString('http://<nat-ip>:8001/bootstrap.p
 
 (`install.sh` prints the exact line with your detected IP.) This installs a
 per-user login autostart that fetches the latest client from the host and runs it
-hidden, then starts it immediately. Nothing is installed; no admin required.
+fully hidden (via a tiny VBScript launcher under `%LOCALAPPDATA%\voxbridge` —
+needed because Windows still shows a console for plain `powershell -WindowStyle
+Hidden` entries in `HKCU\...\Run`), then starts it immediately. No admin
+required.
 
 ## Usage
 
@@ -133,4 +136,5 @@ In the VM:
 
 ```powershell
 Remove-ItemProperty 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run' -Name voxbridge
+Remove-Item -Recurse "$env:LOCALAPPDATA\voxbridge"
 ```
