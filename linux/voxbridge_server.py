@@ -149,18 +149,25 @@ def set_conn(new: socket.socket | None) -> None:
             old.close()
 
 
+def notify(message: str) -> None:
+    with contextlib.suppress(OSError):
+        subprocess.Popen(["notify-send", "-a", "voxbridge", "voxbridge", message])
+
+
 def send_text(text: str) -> None:
     payload = base64.b64encode(text.encode("utf-8")) + b"\n"
     with State.lock:
         conn = State.conn
     if conn is None:
         logger.info("no guest connected; dropped utterance (%d chars)", len(text))
+        notify("Windows client not connected; dictation dropped")
         return
     try:
         conn.sendall(payload)
     except OSError as e:
         logger.warning("send failed (%s); clearing guest", e)
         set_conn(None)
+        notify("Lost the Windows client; dictation dropped")
     else:
         logger.info("forwarded utterance (%d chars)", len(text))
 
@@ -271,6 +278,12 @@ def tcp_loop(cfg: Config, token: str) -> None:
             addr[1],
             cfg.type_delay_ms,
         )
+        # without keepalive a guest that vanished (VM suspended, network reset)
+        # looks connected forever and sendall() "succeeds" into the void
+        conn.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
+        conn.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPIDLE, 30)
+        conn.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPINTVL, 10)
+        conn.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPCNT, 3)
         set_conn(conn)
         threading.Thread(target=watch_disconnect, args=(conn,), daemon=True).start()
 
