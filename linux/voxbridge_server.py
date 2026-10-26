@@ -6,7 +6,7 @@ Windows VM as native keystrokes.
 
 Data path (matches the proven prototype):
 
-    Voxtype --file=<fifo>  ->  this daemon  ->  TCP push  ->  in-guest client
+    Voxtype --file=<file>  ->  this daemon  ->  TCP push  ->  in-guest client
                                                               (SendInput)
 
 The guest dials *out* to us (no inbound rule needed in the VM), authenticates
@@ -25,6 +25,7 @@ import http.server
 import logging
 import os
 import socket
+import stat
 import subprocess
 import threading
 import time
@@ -43,7 +44,7 @@ DEFAULTS = {
     "bind_ip": "",  # auto-detected from vmnet8 if empty
     "tcp_port": 5599,
     "http_port": 8001,
-    "fifo_path": "",  # default: $XDG_RUNTIME_DIR/voxbridge.fifo
+    "output_file": "",  # default: $XDG_RUNTIME_DIR/voxbridge.txt
     "type_delay_ms": 20,
 }
 
@@ -53,7 +54,7 @@ class Config:
     bind_ip: str
     tcp_port: int
     http_port: int
-    fifo_path: str
+    output_file: str
     type_delay_ms: int
 
 
@@ -120,7 +121,7 @@ def load_config() -> Config:
         bind_ip=str(raw["bind_ip"]),  # "" = auto, resolved at startup
         tcp_port=int(raw["tcp_port"]),
         http_port=int(raw["http_port"]),
-        fifo_path=str(raw["fifo_path"]) or str(runtime / "voxbridge.fifo"),
+        output_file=str(raw["output_file"]) or str(runtime / "voxbridge.txt"),
         type_delay_ms=int(raw["type_delay_ms"]),
     )
 
@@ -164,24 +165,47 @@ def send_text(text: str) -> None:
         logger.info("forwarded utterance (%d chars)", len(text))
 
 
-# ---- FIFO reader: each Voxtype --file write is one utterance ------------------
+# ---- Voxtype output file: each completed --file write is one utterance -------
 
 
-def fifo_loop(fifo_path: str) -> None:
-    fifo = Path(fifo_path)
-    if not fifo.exists():
-        os.mkfifo(fifo, 0o600)
-    logger.info("watching FIFO %s", fifo)
+def inbox_loop(output_file: str) -> None:
+    # Voxtype 1.1+ writes --file output atomically (temp file + rename, which
+    # also replaces a FIFO at the path) and then drops "<path>.done". So the
+    # file is complete the moment it appears; a FIFO here can never work.
+    inbox = Path(output_file)
+    done = Path(output_file + ".done")
+    claimed = Path(output_file + ".sending")
+    # anything already there was dictated while the daemon was down; typing it
+    # minutes later into whatever is focused would be worse than dropping it
+    for stale in (inbox, done, claimed):
+        with contextlib.suppress(FileNotFoundError):
+            stale.unlink()
+    logger.info("watching %s", inbox)
     while True:
+        time.sleep(0.1)
         try:
-            # open() blocks until Voxtype opens the FIFO for writing; the read
-            # returns the whole transcription once Voxtype closes it.
-            data = fifo.read_text(encoding="utf-8")
+            # rename first: a new utterance landing mid-read gets its own file
+            # instead of being deleted unread
+            inbox.rename(claimed)
+        except FileNotFoundError:
+            with contextlib.suppress(FileNotFoundError):
+                done.unlink()
+            continue
         except OSError as e:
-            logger.warning("FIFO error (%s); retrying", e)
+            logger.warning("cannot claim %s (%s)", inbox, e)
             time.sleep(1)
             continue
-        text = data.rstrip("\n")
+        try:
+            if not stat.S_ISREG(claimed.stat().st_mode):
+                logger.warning("%s is not a regular file; discarding", inbox)
+                continue
+            text = claimed.read_text(encoding="utf-8").rstrip("\n")
+        except OSError as e:
+            logger.warning("cannot read %s (%s)", inbox, e)
+            continue
+        finally:
+            with contextlib.suppress(FileNotFoundError):
+                claimed.unlink()
         if text:
             send_text(text)
 
@@ -310,7 +334,7 @@ def main() -> int:
     token = load_token()
     cfg.bind_ip = resolve_bind_ip(cfg.bind_ip)
     logger.info("voxbridge starting on %s (delay=%dms)", cfg.bind_ip, cfg.type_delay_ms)
-    threading.Thread(target=fifo_loop, args=(cfg.fifo_path,), daemon=True).start()
+    threading.Thread(target=inbox_loop, args=(cfg.output_file,), daemon=True).start()
     threading.Thread(target=http_loop, args=(cfg, token), daemon=True).start()
     tcp_loop(cfg, token)
     return 0

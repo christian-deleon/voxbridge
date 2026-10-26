@@ -31,7 +31,7 @@ inside Windows**, which is reliable.
   keybind (Hyprland)
         │
         ▼
-  Voxtype (local STT) ──record start --file=<fifo>──► voxbridge daemon (Linux)
+  Voxtype (local STT) ──record start --file=<file>──► voxbridge daemon (Linux)
                                                             │  base64 over TCP
                                                             ▼
                                                   in-guest client (PowerShell)
@@ -96,7 +96,7 @@ text lands in the focused window in the VM. Your normal Voxtype keybind
 | `bind_ip` | auto (`vmnet8`) | host IP the guest dials; set to pin it |
 | `tcp_port` | `5599` | keystroke channel |
 | `http_port` | `8001` | serves client/bootstrap to the guest |
-| `fifo_path` | `$XDG_RUNTIME_DIR/voxbridge.fifo` | where Voxtype writes |
+| `output_file` | `$XDG_RUNTIME_DIR/voxbridge.txt` | where Voxtype writes each utterance |
 | `type_delay_ms` | `20` | per-char delay; raise if chars drop on a slow link |
 
 After changing config: `systemctl --user restart voxbridge`.

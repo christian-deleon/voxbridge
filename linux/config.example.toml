@@ -12,9 +12,9 @@ tcp_port = 5599
 # HTTP port that serves the rendered client/bootstrap to the guest.
 http_port = 8001
 
-# FIFO that Voxtype writes transcriptions to (via `record start --file=...`).
-# Empty = $XDG_RUNTIME_DIR/voxbridge.fifo
-fifo_path = ""
+# File Voxtype writes each transcription to (via `record start --file=...`);
+# the daemon picks it up and deletes it. Empty = $XDG_RUNTIME_DIR/voxbridge.txt
+output_file = ""
 
 # Per-character delay (ms) when typing into the guest. Higher = more reliable
 # over a slow link, lower = snappier. 40 is very safe; tune downward.
