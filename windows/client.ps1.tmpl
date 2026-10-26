@@ -11,6 +11,11 @@ $Port   = {{TCP_PORT}}
 $Token  = "{{TOKEN}}"
 $Delay  = {{DELAY}}
 
+# One client per session: the host keeps only the newest connection, so a second
+# client would keep kicking the first off (and vice versa) every reconnect.
+$script:Mutex = New-Object System.Threading.Mutex($false, 'Local\voxbridge-client')
+if (-not $script:Mutex.WaitOne(0)) { exit }
+
 Add-Type @"
 using System;
 using System.Runtime.InteropServices;
