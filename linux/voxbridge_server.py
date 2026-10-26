@@ -11,7 +11,8 @@ Data path (matches the proven prototype):
 
 The guest dials *out* to us (no inbound rule needed in the VM), authenticates
 with a shared token, then receives one base64-encoded utterance per line and
-types it into whatever window is focused in the guest.
+types it into whatever window is focused in the guest. The same connection
+also carries text clipboard changes in both directions.
 
 This daemon also serves the rendered PowerShell client/bootstrap over HTTP so
 the guest can auto-fetch the latest version on login.
@@ -46,7 +47,10 @@ DEFAULTS = {
     "http_port": 8001,
     "output_file": "",  # default: $XDG_RUNTIME_DIR/voxbridge.txt
     "type_delay_ms": 20,
+    "clipboard_sync": True,
 }
+
+CLIP_MAX_BYTES = 1 << 20  # larger text copies are not synced
 
 
 @dataclass(slots=True)
@@ -56,6 +60,7 @@ class Config:
     http_port: int
     output_file: str
     type_delay_ms: int
+    clipboard_sync: bool
 
 
 def detect_nat_ip() -> str:
@@ -123,6 +128,7 @@ def load_config() -> Config:
         http_port=int(raw["http_port"]),
         output_file=str(raw["output_file"]) or str(runtime / "voxbridge.txt"),
         type_delay_ms=int(raw["type_delay_ms"]),
+        clipboard_sync=bool(raw["clipboard_sync"]),
     )
 
 
@@ -137,7 +143,11 @@ def load_token() -> str:
 
 class State:
     lock = threading.Lock()
+    send_lock = threading.Lock()  # typing and clipboard pushes share the socket
     conn: socket.socket | None = None
+    # last clipboard text synced in either direction; setting one side's
+    # clipboard fires the other side's watcher, and this stops the echo
+    last_clip: str | None = None
 
 
 def set_conn(new: socket.socket | None) -> None:
@@ -154,22 +164,82 @@ def notify(message: str) -> None:
         subprocess.Popen(["notify-send", "-a", "voxbridge", "voxbridge", message])
 
 
-def send_text(text: str) -> None:
-    payload = base64.b64encode(text.encode("utf-8")) + b"\n"
+def push(kind: str, text: str) -> bool:
+    """Send one framed message ("T" = type it, "C" = set clipboard) to the guest."""
+    payload = kind.encode("ascii") + b" " + base64.b64encode(text.encode("utf-8")) + b"\n"
     with State.lock:
         conn = State.conn
     if conn is None:
-        logger.info("no guest connected; dropped utterance (%d chars)", len(text))
-        notify("Windows client not connected; dictation dropped")
-        return
+        return False
     try:
-        conn.sendall(payload)
+        with State.send_lock:
+            conn.sendall(payload)
     except OSError as e:
         logger.warning("send failed (%s); clearing guest", e)
         set_conn(None)
-        notify("Lost the Windows client; dictation dropped")
-    else:
+        return False
+    return True
+
+
+def send_text(text: str) -> None:
+    if push("T", text):
         logger.info("forwarded utterance (%d chars)", len(text))
+    else:
+        logger.info("no guest connected; dropped utterance (%d chars)", len(text))
+        notify("Windows client not connected; dictation dropped")
+
+
+# ---- clipboard sync (text only) ----------------------------------------------
+
+
+def normalize_clip(data: bytes) -> str:
+    return data.decode("utf-8", "replace").replace("\r\n", "\n").rstrip("\x00")
+
+
+def claim_clip(text: str) -> bool:
+    """Record text as the synced clipboard; False if it is already current."""
+    with State.lock:
+        if text == State.last_clip:
+            return False
+        State.last_clip = text
+        return True
+
+
+def host_clipboard_loop() -> None:
+    # wl-paste runs the command once per clipboard change (and once at start)
+    # with the content on stdin; base64 makes each change exactly one line.
+    cmd = ["wl-paste", "--type", "text", "--watch", "sh", "-c", "base64 -w0; echo"]
+    while True:
+        try:
+            with subprocess.Popen(
+                cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL
+            ) as proc:
+                assert proc.stdout is not None
+                for line in proc.stdout:
+                    try:
+                        data = base64.b64decode(line.strip())
+                    except ValueError:
+                        continue
+                    text = normalize_clip(data)
+                    if not text or len(data) > CLIP_MAX_BYTES or not claim_clip(text):
+                        continue
+                    if push("C", text):
+                        logger.info("clipboard -> guest (%d chars)", len(text))
+        except OSError as e:
+            logger.warning("clipboard watch failed (%s)", e)
+        time.sleep(2)
+
+
+def set_host_clipboard(data: bytes) -> None:
+    text = normalize_clip(data)
+    if not text or len(data) > CLIP_MAX_BYTES or not claim_clip(text):
+        return
+    try:
+        subprocess.run(["wl-copy"], input=text.encode("utf-8"), timeout=5, check=True)
+    except (OSError, subprocess.SubprocessError) as e:
+        logger.warning("wl-copy failed (%s)", e)
+    else:
+        logger.info("clipboard <- guest (%d chars)", len(text))
 
 
 # ---- Voxtype output file: each completed --file write is one utterance -------
@@ -220,10 +290,17 @@ def inbox_loop(output_file: str) -> None:
 # ---- TCP server: guest connects out, authenticates, then receives ------------
 
 
-def watch_disconnect(conn: socket.socket) -> None:
+def guest_reader(conn: socket.socket, clipboard_sync: bool) -> None:
+    """Handle guest -> host messages until the connection drops."""
     with contextlib.suppress(OSError):
-        while conn.recv(256):
-            pass
+        for line in conn.makefile("rb"):
+            kind, _, b64 = line.strip().partition(b" ")
+            if kind != b"C" or not clipboard_sync:
+                continue
+            try:
+                set_host_clipboard(base64.b64decode(b64))
+            except ValueError:
+                logger.warning("malformed clipboard message from guest")
     logger.info("guest disconnected")
     with State.lock:
         if State.conn is conn:
@@ -265,18 +342,22 @@ def tcp_loop(cfg: Config, token: str) -> None:
             logger.warning("rejected %s:%d (bad token)", addr[0], addr[1])
             conn.close()
             continue
-        # send live runtime config (per-char delay) first, so the client uses the
-        # current value even when it auto-reconnects after a config change
+        # send live runtime config (per-char delay, clipboard sync on/off) first,
+        # so the client uses current values even when it auto-reconnects after
+        # a config change
         try:
-            conn.sendall(f"{cfg.type_delay_ms}\n".encode("ascii"))
+            conn.sendall(
+                f"{cfg.type_delay_ms} {int(cfg.clipboard_sync)}\n".encode("ascii")
+            )
         except OSError:
             conn.close()
             continue
         logger.info(
-            "guest authenticated from %s:%d (delay=%dms)",
+            "guest authenticated from %s:%d (delay=%dms, clipboard=%s)",
             addr[0],
             addr[1],
             cfg.type_delay_ms,
+            "on" if cfg.clipboard_sync else "off",
         )
         # without keepalive a guest that vanished (VM suspended, network reset)
         # looks connected forever and sendall() "succeeds" into the void
@@ -285,7 +366,9 @@ def tcp_loop(cfg: Config, token: str) -> None:
         conn.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPINTVL, 10)
         conn.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPCNT, 3)
         set_conn(conn)
-        threading.Thread(target=watch_disconnect, args=(conn,), daemon=True).start()
+        threading.Thread(
+            target=guest_reader, args=(conn, cfg.clipboard_sync), daemon=True
+        ).start()
 
 
 # ---- HTTP server: serve the rendered PowerShell client/bootstrap -------------
@@ -349,6 +432,8 @@ def main() -> int:
     logger.info("voxbridge starting on %s (delay=%dms)", cfg.bind_ip, cfg.type_delay_ms)
     threading.Thread(target=inbox_loop, args=(cfg.output_file,), daemon=True).start()
     threading.Thread(target=http_loop, args=(cfg, token), daemon=True).start()
+    if cfg.clipboard_sync:
+        threading.Thread(target=host_clipboard_loop, daemon=True).start()
     tcp_loop(cfg, token)
     return 0
 

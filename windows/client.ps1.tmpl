@@ -3,7 +3,8 @@
 # Rendered and served by the host daemon at http://{{HOST_IP}}:{{HTTP_PORT}}/client.ps1
 # Dials the host, authenticates with the shared token, then types each received
 # utterance into the FOREGROUND window via SendInput (Unicode) -- whatever is
-# focused in the VM receives it. Auto-reconnects forever.
+# focused in the VM receives it. Also syncs the text clipboard both ways when the
+# host enables it. Auto-reconnects forever.
 
 $ErrorActionPreference = "Stop"
 $HostIP = "{{HOST_IP}}"
@@ -38,6 +39,8 @@ public static class Inj {
     [DllImport("user32.dll", SetLastError=true)]
     public static extern uint SendInput(uint nInputs, INPUT[] pInputs, int cbSize);
 
+    [DllImport("user32.dll")]
+    public static extern uint GetClipboardSequenceNumber();
 
     [DllImport("user32.dll")] static extern IntPtr GetForegroundWindow();
     [DllImport("user32.dll")] static extern uint GetWindowThreadProcessId(IntPtr hWnd, IntPtr pid);
@@ -100,6 +103,12 @@ public static class Inj {
 }
 "@
 
+Add-Type -AssemblyName System.Windows.Forms   # Clipboard; powershell.exe is STA
+$ClipMax  = 1MB
+# Last clipboard text synced either way (LF line endings). Setting the clipboard
+# bumps the sequence number too, so without this every sync would echo back.
+$LastClip = $null
+
 while ($true) {
     $client = $null
     try {
@@ -110,15 +119,44 @@ while ($true) {
         $writer = New-Object System.IO.StreamWriter($stream, [System.Text.Encoding]::ASCII)
         $writer.NewLine = "`n"; $writer.AutoFlush = $true
         $writer.WriteLine($Token)                 # authenticate
-        $srvDelay = $reader.ReadLine()            # host sends the current per-char delay
-        if ($srvDelay -match '^\d+$') { $Delay = [int]$srvDelay }
+        $hello = "$($reader.ReadLine())" -split ' '   # "<delay ms> <clipboard 0|1>"
+        if ($hello[0] -match '^\d+$') { $Delay = [int]$hello[0] }
+        $ClipSync = $hello.Count -gt 1 -and $hello[1] -eq '1'
+        $seq = [Inj]::GetClipboardSequenceNumber()
+        $pending = $reader.ReadLineAsync()
         while ($true) {
-            $line = $reader.ReadLine()
-            if ($null -eq $line) { break }         # host closed / disconnected
-            if ($line.Length -eq 0) { continue }
-            $bytes = [System.Convert]::FromBase64String($line)
-            $text  = [System.Text.Encoding]::UTF8.GetString($bytes)
-            [Inj]::TypeUnicode($text, $Delay)
+            # wait briefly for the host so the clipboard poll below keeps running
+            if ($pending.Wait(250)) {
+                $line = $pending.Result
+                if ($null -eq $line) { break }     # host closed / disconnected
+                $pending = $reader.ReadLineAsync()
+                $kind, $b64 = $line -split ' ', 2
+                if (-not $b64) { continue }
+                $text = [System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String($b64))
+                if ($kind -eq 'T') {
+                    [Inj]::TypeUnicode($text, $Delay)
+                } elseif ($kind -eq 'C') {
+                    $LastClip = $text
+                    try {
+                        [System.Windows.Forms.Clipboard]::SetDataObject($text.Replace("`n", "`r`n"), $true, 10, 50)
+                    } catch { }                    # held open by another app past the retries
+                }
+            }
+            if (-not $ClipSync) { continue }
+            $now = [Inj]::GetClipboardSequenceNumber()
+            if ($now -eq $seq) { continue }
+            $seq = $now
+            $text = $null
+            try {
+                if ([System.Windows.Forms.Clipboard]::ContainsText()) {
+                    $text = [System.Windows.Forms.Clipboard]::GetText().Replace("`r`n", "`n")
+                }
+            } catch { }                            # clipboard busy; next change retries
+            if (-not $text -or $text -ceq $LastClip) { continue }
+            $bytes = [System.Text.Encoding]::UTF8.GetBytes($text)
+            if ($bytes.Length -gt $ClipMax) { continue }
+            $LastClip = $text
+            $writer.WriteLine('C ' + [System.Convert]::ToBase64String($bytes))
         }
     } catch {
         # swallow and reconnect

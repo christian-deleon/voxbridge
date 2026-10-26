@@ -20,3 +20,6 @@ output_file = ""
 # Per-character delay (ms) when typing into the guest. Higher = more reliable
 # over a slow link, lower = snappier. 40 is very safe; tune downward.
 type_delay_ms = 20
+
+# Sync the text clipboard both ways between the host (Wayland) and the guest.
+clipboard_sync = true

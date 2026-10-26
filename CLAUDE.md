@@ -29,11 +29,16 @@ daemon on the Linux host (`linux/`) and a PowerShell client served to the VM
 
 ## Protocol (daemon ↔ in-guest client)
 The guest dials **out** to the host TCP port and sends the shared token as its
-first line. The host replies with one line = the current per-char delay (so the
-client picks up config changes on every reconnect), then pushes one base64(UTF-8)
-line per utterance; the client decodes and types each via `SendInput` (Unicode).
+first line. The host replies with one line `<delay_ms> <clipboard 0|1>` (so the
+client picks up config changes on every reconnect). After that every line is
+`<kind> <base64(UTF-8)>`:
+- host → guest `T`: utterance; the client types it via `SendInput` (Unicode).
+- host → guest `C` / guest → host `C`: text clipboard, LF line endings on the
+  wire. Each side keeps the last synced text to suppress echoes.
+
 If you change the framing, update **both** `voxbridge_server.py` and
-`client.ps1.tmpl` together.
+`client.ps1.tmpl` together. The client is re-fetched on each guest login, so a
+running client keeps the old framing until it restarts.
 
 ## Conventions
 - **Stdlib only** on the Python side — do not add third-party dependencies.

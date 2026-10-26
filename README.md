@@ -17,6 +17,9 @@ voxbridge delivers it to the VM.
 - Because it's plain keystroke injection into the focused window, it works with
   any app in the VM — whatever is in front receives the text, exactly as if you
   were typing it there yourself.
+- Optionally syncs the **text clipboard** both ways over the same connection,
+  replacing VMware's copy/paste integration, which is unreliable on Wayland
+  hosts.
 
 ## Design
 
@@ -88,6 +91,8 @@ VMware window focused the text lands in the focused window in the VM; anywhere
 else it types into the Linux app as usual. If the bridge is down you get a
 notification instead of a silent drop.
 
+With `clipboard_sync` on, copy text on either side and paste on the other.
+
 ## Configuration
 
 `~/.config/voxbridge/config.toml`:
@@ -99,6 +104,7 @@ notification instead of a silent drop.
 | `http_port` | `8001` | serves client/bootstrap to the guest |
 | `output_file` | `$XDG_RUNTIME_DIR/voxbridge.txt` | where Voxtype writes each utterance |
 | `type_delay_ms` | `20` | per-char delay; raise if chars drop on a slow link |
+| `clipboard_sync` | `true` | sync text clipboard host ↔ guest (needs `wl-clipboard`) |
 
 After changing config: `systemctl --user restart voxbridge`.
 
