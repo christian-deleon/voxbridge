@@ -18,8 +18,11 @@ $dir = Join-Path $env:LOCALAPPDATA 'voxbridge'
 $vbs = Join-Path $dir 'run.vbs'
 New-Item -ItemType Directory -Force -Path $dir | Out-Null
 
+# Retry the fetch: at login the host daemon (or vmnet8) may not be up yet, and a
+# single failed download would leave no client until the next login.
+$loop = "while (`$true) { try { iex ((New-Object Net.WebClient).DownloadString('$Url')) } catch { }; Start-Sleep -Seconds 5 }"
 # VBS doubles double-quotes to escape them inside a string literal.
-$ps = "powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -Command `"iex ((New-Object Net.WebClient).DownloadString('$Url'))`""
+$ps = "powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -Command `"$loop`""
 $psEscaped = $ps.Replace('"', '""')
 @(
     "' voxbridge hidden launcher -- rewritten by bootstrap.ps1"

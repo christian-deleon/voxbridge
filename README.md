@@ -77,8 +77,9 @@ iex ((New-Object Net.WebClient).DownloadString('http://<nat-ip>:8001/bootstrap.p
 per-user login autostart that fetches the latest client from the host and runs it
 fully hidden (via a tiny VBScript launcher under `%LOCALAPPDATA%\voxbridge` —
 needed because Windows still shows a console for plain `powershell -WindowStyle
-Hidden` entries in `HKCU\...\Run`), then starts it immediately. No admin
-required.
+Hidden` entries in `HKCU\...\Run`), then starts it immediately. The launcher
+keeps retrying until the host answers, so a login before the daemon is up still
+connects. No admin required.
 
 ## Usage
 
