@@ -10,9 +10,8 @@ voxbridge delivers it to the VM.
 
 ## What it does
 
-- A dedicated keybind on Linux (separate from your normal Voxtype dictation)
-  records and transcribes locally, then routes the text to the VM instead of
-  typing it on the host.
+- Your normal Voxtype keybind records and transcribes locally; when the VMware
+  window has focus, the text is routed to the VM instead of typed on the host.
 - A small non-admin client inside the VM receives the text and types it into the
   foreground window via `SendInput`.
 - Because it's plain keystroke injection into the focused window, it works with
@@ -44,8 +43,9 @@ inside Windows**, which is reliable.
   authenticates with a shared token.
 - The host pushes one transcription per utterance; the client types it into
   whatever is focused.
-
-Your normal Voxtype keybind is untouched and still types into Linux apps.
+- `voxbridge-dictate` decides per keypress: VMware focused → Voxtype writes the
+  text to a file the daemon watches, anything else → Voxtype's normal output.
+  One keybind, no modifier-timing ambiguity.
 
 ## Setup
 
@@ -56,15 +56,14 @@ linux/install.sh
 ```
 
 Generates a shared token, writes `~/.config/voxbridge/config.toml`, auto-detects
-the VMware NAT IP, ensures the `ufw` rules, and installs + starts the `voxbridge`
-systemd user service.
+the VMware NAT IP, ensures the `ufw` rules, installs + starts the `voxbridge`
+systemd user service, and links `voxbridge-dictate` into `~/.local/bin`.
 
 ### 2. Hyprland keybind
 
-```bash
-cat voxtype/hyprland-keybind.example.conf >> ~/.config/hypr/bindings.conf
-hyprctl reload
-```
+Point your Voxtype push-to-talk start bind at `voxbridge-dictate` (see
+`voxtype/hyprland-keybind.example.conf`), keep `voxtype record stop` on release,
+then `hyprctl reload`.
 
 ### 3. Guest (Windows VM) — one time
 
@@ -83,9 +82,10 @@ required.
 
 ## Usage
 
-Hold the voxbridge keybind (default **SUPER+CTRL+SHIFT+X**), speak, release → the
-text lands in the focused window in the VM. Your normal Voxtype keybind
-(**SUPER+CTRL+X**) still dictates into Linux apps.
+Hold your dictation keybind (e.g. **SUPER+CTRL+X**), speak, release. With the
+VMware window focused the text lands in the focused window in the VM; anywhere
+else it types into the Linux app as usual. If the bridge is down you get a
+notification instead of a silent drop.
 
 ## Configuration
 
@@ -130,6 +130,7 @@ journalctl --user -u voxbridge -f        # live logs: connections, utterances
 ```bash
 systemctl --user disable --now voxbridge
 rm ~/.config/systemd/user/voxbridge.service ~/.config/voxbridge -rf
+rm ~/.local/bin/voxbridge-dictate
 ```
 
 In the VM:

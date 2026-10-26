@@ -1,0 +1,23 @@
+#!/usr/bin/env bash
+# Start Voxtype push-to-talk, routed by focus: a VMware window gets the
+# transcription via the file voxbridge watches, anything else gets Voxtype's
+# normal output. Bind the key release to `voxtype record stop`.
+#
+# Usage: voxbridge-dictate
+set -Eeuo pipefail
+
+# must match output_file in ~/.config/voxbridge/config.toml
+out=${VOXBRIDGE_OUTPUT:-${XDG_RUNTIME_DIR:-/run/user/$UID}/voxbridge.txt}
+
+class=$(hyprctl activewindow -j 2>/dev/null | jq -r '.class // ""') || class=
+if [[ ${class,,} != vmware ]]; then
+  exec voxtype record start
+fi
+
+# With the daemon down nothing would pick the file up; say so instead of
+# recording into nowhere.
+if ! systemctl --user --quiet is-active voxbridge.service; then
+  notify-send -a voxbridge voxbridge "Bridge is not running; dictation not started"
+  exit 1
+fi
+exec voxtype record start --file="$out"

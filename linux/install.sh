@@ -101,19 +101,25 @@ systemctl --user daemon-reload
 systemctl --user enable --now voxbridge.service
 msg "voxbridge.service enabled and started"
 
+# --- focus-routing dictation launcher ---
+mkdir -p -- "$HOME/.local/bin"
+ln -snf -- "$script_dir/voxbridge-dictate" "$HOME/.local/bin/voxbridge-dictate"
+msg "linked voxbridge-dictate into ~/.local/bin"
+
 # --- next steps ---
 printf '\n%svoxbridge installed.%s\n\n' "$c_ok" "$c_rst"
 cat <<EOF
 Next steps:
-  1. Add the Hyprland keybind:
-       cat $repo_dir/voxtype/hyprland-keybind.example.conf >> ~/.config/hypr/bindings.conf
+  1. Point your Voxtype push-to-talk start bind at voxbridge-dictate
+     (example: $repo_dir/voxtype/hyprland-keybind.example.conf), then:
        hyprctl reload
 
   2. One-time, inside the Windows VM (non-admin PowerShell):
        iex ((New-Object Net.WebClient).DownloadString('http://${nat_ip:-<nat-ip>}:8001/bootstrap.ps1'))
 
-  3. Hold SUPER+CTRL+SHIFT+X, speak, release -> text appears in the focused
-     window in the VM. (SUPER+CTRL+X still dictates locally as before.)
+  3. Hold SUPER+CTRL+X, speak, release. With the VMware window focused the
+     text appears in the focused window in the VM; anywhere else it types
+     locally as before.
 
 Check status:  systemctl --user status voxbridge.service
 Live logs:     journalctl --user -u voxbridge.service -f

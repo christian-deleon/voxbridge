@@ -14,6 +14,7 @@ http_port = 8001
 
 # File Voxtype writes each transcription to (via `record start --file=...`);
 # the daemon picks it up and deletes it. Empty = $XDG_RUNTIME_DIR/voxbridge.txt
+# (voxbridge-dictate assumes the default; set VOXBRIDGE_OUTPUT if you change it).
 output_file = ""
 
 # Per-character delay (ms) when typing into the guest. Higher = more reliable

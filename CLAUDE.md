@@ -14,7 +14,9 @@ daemon on the Linux host (`linux/`) and a PowerShell client served to the VM
   `{{DELAY}}` at HTTP-serve time. **Edit the `.tmpl` files — there is no checked-in
   rendered copy.**
 - `linux/install.sh` — idempotent host installer (token, config, ufw, systemd user
-  service).
+  service, `~/.local/bin/voxbridge-dictate` link).
+- `linux/voxbridge-dictate` — keybind entry point; routes dictation to the
+  output file only when a VMware window has focus.
 - `voxtype/hyprland-keybind.example.conf` — the trigger keybind.
 
 ## Commands
